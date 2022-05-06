@@ -12,6 +12,16 @@ from common_lab_utils import LocalCoordinateSystem, GeodeticPosition, Attitude, 
 from dataset import getPosesFromData
 from dataset2 import Dataset
 
+def to_SO3(attitude: Attitude):
+    """Convert to SO3 representation."""
+
+
+    return SO3.rot_z(attitude.z_rot) @ SO3.rot_y(attitude.y_rot) @ SO3.rot_x(attitude.x_rot)
+
+def to_vector(position: CartesianPosition):
+    """Convert to column vector representation."""
+
+    return np.array([[position.x, position.y, position.z]]).T
 
 def zncc_test(img1, img2, W):
 
@@ -68,60 +78,29 @@ def match(img1, img2, W = 7, alpha = 0.6):
     reduced2 = np.divide(subimgtensor2, sigma2[:, :, np.newaxis, np.newaxis])
 
     zncc_image = np.sum(reduced1 * reduced2, axis=(2,3))  # omitting this for efficiency: /((2*W+1)**2)
-    zncc_image[zncc_image < alpha * (2*W+1)**2] = 0 # removing low quality matches
-    zncc_image[~np.isfinite(zncc_image)] = 0 # removing nans and infinities
+
+    zncc_quality_mask = zncc_image < alpha * (2*W+1)**2 # removing low quality matches
+    zncc_valid_mask = ~np.isfinite(zncc_image) # # removing nans and infinities
+    zncc_mask = zncc_quality_mask + zncc_valid_mask
+    zncc_image[zncc_mask] = 0
 
     return zncc_image
 
-def to_SO3(attitude: Attitude):
-    """Convert to SO3 representation."""
+def getDepth(image_series, scale=0.5, d_range = (500, 1000, 10)):
 
-
-    return SO3.rot_z(attitude.z_rot) @ SO3.rot_y(attitude.y_rot) @ SO3.rot_x(attitude.x_rot)
-
-def to_vector(position: CartesianPosition):
-    """Convert to column vector representation."""
-
-    return np.array([[position.x, position.y, position.z]]).T
-
-
-if __name__ == '__main__':
-
-    dataset = Dataset()
-
-
-    image_series = []
-    """image_series.append(cv2.imread("data/110608_Oslo_0502.jpg", cv2.IMREAD_GRAYSCALE))
-    image_series.append(cv2.imread("data/110608_Oslo_0503.jpg", cv2.IMREAD_GRAYSCALE))
-    image_series.append(cv2.imread("data/110608_Oslo_0504.jpg", cv2.IMREAD_GRAYSCALE))
-"""
-    for i, e in enumerate(dataset):
-        if i > 2:
-            break
-
-        image_series.append(e)
-
-    """for i, data_element in enumerate(image_series):
-        HEIGHT, WIDTH = data_element.image.shape
-
-        image_series[i] = cv2.resize(image, (WIDTH // 2, HEIGHT // 2))"""
-
-    scale = 0.2
 
     S = np.diag([scale, scale, 1])
-    #S = np.identity(3)
+    # S = np.identity(3)
 
     HEIGHT, WIDTH = image_series[0].image.shape
     n = np.array([0, 0, -1])
 
-
-    K_ref = S @ np.array([[image_series[-1].intrinsics.fu, image_series[-1].intrinsics.s, image_series[-1].intrinsics.cu],
-                  [0, image_series[-1].intrinsics.fv, image_series[-1].intrinsics.cv],
-                  [0, 0, 1]])
+    K_ref = S @ np.array(
+        [[image_series[-1].intrinsics.fu, image_series[-1].intrinsics.s, image_series[-1].intrinsics.cu],
+         [0, image_series[-1].intrinsics.fv, image_series[-1].intrinsics.cv],
+         [0, 0, 1]])
 
     K_ref_inv = np.linalg.inv(K_ref)
-
-    T_list = []
 
     local_system = LocalCoordinateSystem(GeodeticPosition(59.963516, 10.667307, 321.0))
 
@@ -155,12 +134,7 @@ if __name__ == '__main__':
 
         undistorted_img = camera_model.undistort_image(element.image)
 
-        undistorted_image_series.append(cv2.resize(undistorted_img, (round(WIDTH*scale), round(HEIGHT*scale))))
-
-
-
-
-
+        undistorted_image_series.append(cv2.resize(undistorted_img, (round(WIDTH * scale), round(HEIGHT * scale))))
 
     relative_R = []
 
@@ -170,46 +144,52 @@ if __name__ == '__main__':
         relative_R.append(relative_T[i].rotation.matrix)
         relative_t.append(relative_T[i].translation)
 
-    image_sum = np.zeros((round(HEIGHT*scale), round(WIDTH*scale), 3), dtype=np.dtype(np.int32))
-    image_sum[:, :, 2] = undistorted_image_series[2]
+    d_list = [e for e in range(d_range[0], d_range[1], d_range[2])]
 
-
-    d_list = [e for e in range(500, 1200, 10)]
-
-    M_arr = np.zeros((round(HEIGHT*scale), round(WIDTH*scale), len(d_list)))
+    M_arr = np.zeros((round(HEIGHT * scale), round(WIDTH * scale), len(d_list)))
 
     for j, d in enumerate(d_list):
         zncc_img_list = []
         for i in range(3):
-            K = S @ np.array([[image_series[i].intrinsics.fu, image_series[i].intrinsics.s, image_series[i].intrinsics.cu],
-                              [0, image_series[i].intrinsics.fv, image_series[i].intrinsics.cv],
-                              [0, 0, 1]])
-
-            K_inv = np.linalg.inv(K)
+            K = S @ np.array(
+                [[image_series[i].intrinsics.fu, image_series[i].intrinsics.s, image_series[i].intrinsics.cu],
+                 [0, image_series[i].intrinsics.fv, image_series[i].intrinsics.cv],
+                 [0, 0, 1]])
 
             H = K @ (relative_R[i] - np.outer(relative_t[i].T, n) / d) @ K_ref_inv
             H_inv = np.linalg.inv(H)
 
-            IkWarped = cv2.warpPerspective(undistorted_image_series[i], H_inv, (round(WIDTH*scale), round(HEIGHT*scale)))
+            IkWarped = cv2.warpPerspective(undistorted_image_series[i], H_inv,
+                                           (round(WIDTH * scale), round(HEIGHT * scale)))
             zncc_img_list.append(match(IkWarped, undistorted_image_series[-1]))
-            image_sum[:, :, i] = IkWarped
+
 
         zncc_sum = sum(zncc_img_list)
         M_arr[:, :, j] = zncc_sum
 
+    depth_image = np.argmax(M_arr, axis=2) * d_range[2] + d_range[0]
 
-    depth_image = np.argmax(M_arr, axis=2)*10 + 500
-    print(depth_image)
+    return depth_image
 
+if __name__ == '__main__':
 
-    plt.imshow(depth_image, cmap="gray")
-    plt.colorbar()
-    plt.show()
-
+    dataset = Dataset()
 
 
+    image_series = []
 
+    for i, e in enumerate(dataset):
+        if i < 2:
+            image_series.append(e)
+        else:
 
+            image_series.append(e)
+            depth_image = getDepth(image_series, 0.1)
+            plt.figure()
+            plt.imshow(depth_image, cmap="gray")
+            plt.title(f"Image number {i}")
+            plt.colorbar()
+            plt.show()
 
+            image_series.pop(0)
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
