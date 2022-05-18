@@ -10,6 +10,7 @@ class DataElement:
     """A set of data for each image in the dataset."""
     img_num: int
     image: np.ndarray
+    image_bgr: np.ndarray
     intrinsics: Intrinsics
     camera_position_in_body: CartesianPosition
     camera_attitude_in_body: Attitude
@@ -45,6 +46,7 @@ class Dataset:
         next_data_element = DataElement(
             self._curr_file_num,
             cv2.imread(image_filename, cv2.IMREAD_GRAYSCALE),
+            cv2.imread(image_filename),
             Intrinsics(*metadata[:8]),
             CartesianPosition(*metadata[8:11]),
             Attitude(*metadata[11:14]),
